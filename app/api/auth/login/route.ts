@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
 import { isSupabaseRequestTimeout } from '@/lib/supabase/request-timeout'
 import { checkRateLimit } from '@/lib/security/rate-limit'
+import { isPermanentOwnerEmail } from '@/lib/platform-owner'
 import * as Sentry from '@sentry/nextjs'
 
 const loginSchema = z.object({
@@ -10,7 +11,6 @@ const loginSchema = z.object({
   password: z.string().min(1).max(4096),
 })
 
-const PERMANENT_PLATFORM_OWNER_EMAIL = 'doriazowan@gmail.com'
 const LOGIN_SUPABASE_DEADLINE_MS = 7_000
 
 export async function POST(request: Request) {
@@ -60,9 +60,26 @@ export async function POST(request: Request) {
       .single()
 
     if (profileError) {
+      const isPermanentOwner = isPermanentOwnerEmail(data.user.email)
       Sentry.captureException(profileError, {
-        tags: { feature: 'auth', auth_stage: 'profile_read' },
+        level: isPermanentOwner ? 'warning' : 'error',
+        tags: {
+          feature: 'auth',
+          auth_stage: 'profile_read',
+          supabase_error_code: profileError.code ?? 'unknown',
+        },
       })
+
+      // Password authentication has already verified this fixed owner identity.
+      // Keep the owner out of a lockout loop if the profile table's grants or
+      // migration state are broken; the dashboard has the same narrow fallback.
+      if (isPermanentOwner) {
+        console.error('[auth/login] Permanent owner profile read failed', {
+          code: profileError.code ?? 'unknown',
+        })
+        return NextResponse.json({ ok: true })
+      }
+
       await supabase.auth.signOut()
       const timedOut = isSupabaseRequestTimeout(profileError)
       if (timedOut) console.error('[auth/login] Supabase request timed out', { stage })
@@ -72,10 +89,9 @@ export async function POST(request: Request) {
       )
     }
 
-    // The permanent owner is forced active by the database migration and is
-    // already exempted by /api/auth/check-activation. Mirror that invariant here
-    // for projects whose owner profile predates the migration.
-    const isPermanentOwner = data.user.email?.toLowerCase() === PERMANENT_PLATFORM_OWNER_EMAIL
+    // The permanent owner remains active even if their profile row has stale
+    // activation flags; this is the app's fixed platform-owner invariant.
+    const isPermanentOwner = isPermanentOwnerEmail(data.user.email)
     const isActive = isPermanentOwner || (
       profile?.activation_status === 'active' && profile?.is_active !== false
     )

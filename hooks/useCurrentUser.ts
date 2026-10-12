@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { createClient } from '@/lib/supabase/client'
+import { isPermanentOwnerEmail } from '@/lib/platform-owner'
 import * as Sentry from '@sentry/nextjs'
 
 export type CurrentUser = {
@@ -51,9 +52,43 @@ export function useCurrentUser() {
                 .single()
 
             if (error) {
+                const isPermanentOwner = isPermanentOwnerEmail(user.email)
                 Sentry.captureException(error, {
-                    tags: { feature: 'current-user', profile_stage: 'profile_read' },
+                    level: isPermanentOwner ? 'warning' : 'error',
+                    tags: {
+                        feature: 'current-user',
+                        profile_stage: 'profile_read',
+                        supabase_error_code: error.code ?? 'unknown',
+                    },
                 })
+
+                // The canonical owner identity is established by Supabase Auth,
+                // not profile metadata. This narrowly scoped fallback keeps the
+                // app usable during a profile-table permission/schema incident.
+                if (isPermanentOwner) {
+                    const fullName = user.user_metadata?.full_name
+                    const photoUrl = user.user_metadata?.avatar_url
+                    return {
+                        id: user.id,
+                        email: user.email ?? null,
+                        full_name: typeof fullName === 'string' ? fullName : null,
+                        role: 'super_admin',
+                        oscar: null,
+                        photo_url: typeof photoUrl === 'string' ? photoUrl : null,
+                        is_active: true,
+                        team: null,
+                        is_team_head: false,
+                        phone: null,
+                        job_title: null,
+                        bio: null,
+                        date_of_birth: null,
+                        gender: null,
+                        address: null,
+                        city: null,
+                        profile_completed_at: null,
+                    }
+                }
+
                 return null
             }
             if (!profile) return null

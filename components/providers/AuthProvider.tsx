@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import * as Sentry from '@sentry/nextjs'
 import { createClient } from '@/lib/supabase/client'
+import { isPermanentOwnerEmail } from '@/lib/platform-owner'
 import { useRouter, usePathname } from 'next/navigation'
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -75,6 +76,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
                 // No session — SIGNED_OUT event will handle the redirect
                 if (!session) return
+
+                // The canonical platform owner is active by invariant. A stale
+                // or temporarily unreadable profile must not revoke that session.
+                if (isPermanentOwnerEmail(session.user.email)) return
 
                 // Check whether the public user profile still exists.
                 // If an admin deleted this account, the row will be gone.
