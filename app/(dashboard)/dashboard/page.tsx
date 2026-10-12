@@ -23,6 +23,7 @@ import { MissionRequestPrompt } from "@/components/missions/MissionAvailability"
 import { useCurrentUser } from "@/hooks/useCurrentUser"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { CountUp } from "@/components/ui/count-up"
+import * as Sentry from "@sentry/nextjs"
 
 // ─── Lazy-loaded charts ────────────────────────────────────────────────────────
 
@@ -100,6 +101,14 @@ const FALLBACK_STATUS_LABELS: Record<string, string> = {
   cancelled: "Cancelled",
   broken_arrow: "BROKEN ARROW",
 }
+
+type DashboardLoadStage =
+  | "active_program"
+  | "auth_user"
+  | "officer_assignments"
+  | "assigned_journeys"
+  | "global_metrics"
+  | "recent_journeys"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -199,7 +208,7 @@ export default function DashboardPage() {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const { isInstalled, install, platform: pwaplatform } = usePWAInstall()
   const [showInstallModal, setShowInstallModal] = useState(false)
-  const { data: currentUser, isLoading: userLoading } = useCurrentUser()
+  const { data: currentUser, isLoading: userLoading, refetch: refetchCurrentUser } = useCurrentUser()
 
   // Global operational summaries contain sensitive journey, Papa, fleet and
   // incident information. Keep them strictly within Command/Admin scope.
@@ -217,8 +226,10 @@ export default function DashboardPage() {
   const loadDashboardData = useCallback(async () => {
     setLoading(true)
     setLoadError(false)
+    let stage: DashboardLoadStage = "active_program"
     try {
-      // 1. Fetch active program (everyone sees current program)
+      // The program name is contextual. A failure here must not suppress a
+      // user's independently verified assignments or the rest of the page.
       const { data: programData, error: programError } = await supabase
         .from("programs")
         .select(canViewGlobalDashboard ? "id, name" : "id")
@@ -226,14 +237,23 @@ export default function DashboardPage() {
         .order("created_at", { ascending: false })
         .limit(1)
 
-      if (programError) throw programError
-      setActiveProgram((programData?.[0] as any) ?? null)
+      if (programError) {
+        setActiveProgram(null)
+        Sentry.captureException(programError, {
+          level: "warning",
+          tags: { feature: "dashboard", dashboard_stage: "active_program" },
+        })
+      } else {
+        setActiveProgram((programData?.[0] as any) ?? null)
+      }
 
+      stage = "auth_user"
       const { data: { user }, error: authError } = await supabase.auth.getUser()
       if (authError || !user) throw authError || new Error("Session unavailable")
 
       // 2. Fetch officer-specific assigned duties
       if (user) {
+        stage = "officer_assignments"
         const { data: myDORows, error: assignmentError } = await (supabase as any)
           .from("journey_duty_officers")
           .select("journey_id, status")
@@ -251,6 +271,7 @@ export default function DashboardPage() {
         const orParts = [`assigned_duty_officer_id.eq.${user.id}`, `assigned_do_id.eq.${user.id}`]
         if (doIds.length > 0) orParts.push(`id.in.(${doIds.join(",")})`)
 
+        stage = "assigned_journeys"
         let myJourneysQuery = (supabase as any)
           .from("journeys")
           .select(DASHBOARD_JOURNEY_SELECT, { count: "exact" })
@@ -272,6 +293,7 @@ export default function DashboardPage() {
 
       // 3. Only Command/Admin receive cross-program metrics or journey details.
       if (canViewGlobalDashboard) {
+        stage = "global_metrics"
         const [papasRes, cheetahsRes, journeysRes, incidentsRes] = await Promise.all([
           supabase.from("papas").select("id", { count: "exact", head: true }),
           supabase.from("cheetahs").select("id", { count: "exact", head: true }),
@@ -292,6 +314,7 @@ export default function DashboardPage() {
           incidents: incidentsRes.count || 0,
         })
 
+        stage = "recent_journeys"
         const { data: journeys, error: recentError } = await (supabase as any)
           .from("journeys")
           .select(DASHBOARD_JOURNEY_SELECT)
@@ -305,11 +328,21 @@ export default function DashboardPage() {
       setUpdatedAt(new Date())
     } catch (err) {
       setLoadError(true)
-      console.error("Dashboard load failed:", err)
+      console.error("Dashboard load failed at stage:", stage, err)
+      Sentry.captureException(err, {
+        tags: { feature: "dashboard", dashboard_stage: stage },
+      })
     } finally {
       setLoading(false)
     }
   }, [supabase, canViewGlobalDashboard])
+
+  const handleDashboardRetry = async () => {
+    setLoading(true)
+    setLoadError(false)
+    await refetchCurrentUser()
+    void loadDashboardData()
+  }
 
   useEffect(() => {
     if (!userLoading) {
@@ -334,7 +367,7 @@ export default function DashboardPage() {
 
   if (loading || userLoading) return <DashboardSkeleton />
 
-  if (loadError) return <section role="alert" className="mx-auto max-w-xl space-y-4 rounded-xl border p-6"><h1 className="text-xl font-semibold">Dashboard data unavailable</h1><p className="text-sm text-muted-foreground">We could not verify the latest operational data. Counts and assignments are hidden to avoid showing incomplete information.</p><Button onClick={() => void loadDashboardData()}>Retry dashboard</Button></section>
+  if (loadError) return <section role="alert" className="mx-auto max-w-xl space-y-4 rounded-xl border p-6"><h1 className="text-xl font-semibold">Dashboard data unavailable</h1><p className="text-sm text-muted-foreground">We could not verify the latest operational data. Counts and assignments are hidden to avoid showing incomplete information.</p><Button onClick={() => void handleDashboardRetry()}>Retry dashboard</Button></section>
 
   const firstName = currentUser?.full_name?.split(" ")[0]
   const officerUnit = currentUser?.oscar || (currentUser?.role ? toTitleCase(currentUser.role) : "General Duty")

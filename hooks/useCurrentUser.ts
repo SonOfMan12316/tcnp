@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { createClient } from '@/lib/supabase/client'
+import * as Sentry from '@sentry/nextjs'
 
 export type CurrentUser = {
     id: string
@@ -35,7 +36,13 @@ export function useCurrentUser() {
         queryKey: ['currentUser'],
         queryFn: async () => {
             const { data: { user }, error: authError } = await supabase.auth.getUser()
-            if (authError || !user) return null
+            if (authError) {
+                Sentry.captureException(authError, {
+                    tags: { feature: 'current-user', profile_stage: 'auth_user' },
+                })
+                return null
+            }
+            if (!user) return null
 
             const { data: profile, error } = await supabase
                 .from('users')
@@ -43,7 +50,13 @@ export function useCurrentUser() {
                 .eq('id', user.id)
                 .single()
 
-            if (error || !profile) return null
+            if (error) {
+                Sentry.captureException(error, {
+                    tags: { feature: 'current-user', profile_stage: 'profile_read' },
+                })
+                return null
+            }
+            if (!profile) return null
 
             const p = profile as any
             return {

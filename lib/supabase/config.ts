@@ -17,8 +17,19 @@ export const getSupabaseBrowserConfig = () => ({
   anonKey: ensureEnvValue('NEXT_PUBLIC_SUPABASE_ANON_KEY', process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 })
 
-export const getSupabaseServiceRoleKey = () =>
-  ensureEnvValue('SUPABASE_SERVICE_ROLE_KEY', process.env.SUPABASE_SERVICE_ROLE_KEY)
+export const getSupabaseServiceRoleKey = () => {
+  const key = ensureEnvValue('SUPABASE_SERVICE_ROLE_KEY', process.env.SUPABASE_SERVICE_ROLE_KEY)
+
+  // Supabase personal access tokens authenticate Management API requests; they
+  // are not project API keys and cannot be used by supabase-js clients.
+  if (key.toLowerCase().startsWith('sbp_')) {
+    throw new Error(
+      'SUPABASE_SERVICE_ROLE_KEY is a Supabase personal access token. Use the project service_role API key from Supabase Project Settings → API Keys.'
+    )
+  }
+
+  return key
+}
 
 export const getEnvOrThrow = (key: string): string =>
   ensureEnvValue(key, process.env[key as keyof NodeJS.ProcessEnv])
