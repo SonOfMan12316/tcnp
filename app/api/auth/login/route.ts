@@ -9,6 +9,8 @@ const loginSchema = z.object({
   password: z.string().min(1).max(4096),
 })
 
+const PERMANENT_PLATFORM_OWNER_EMAIL = 'doriazowan@gmail.com'
+
 export async function POST(request: Request) {
   if (!checkRateLimit(request, 'login', 10, 60_000).success) return NextResponse.json({ error: 'Too many attempts. Please wait a minute.' }, { status: 429 })
   let payload: unknown
@@ -59,7 +61,13 @@ export async function POST(request: Request) {
       )
     }
 
-    const isActive = profile?.activation_status === 'active' && profile?.is_active !== false
+    // The permanent owner is forced active by the database migration and is
+    // already exempted by /api/auth/check-activation. Mirror that invariant here
+    // for projects whose owner profile predates the migration.
+    const isPermanentOwner = data.user.email?.toLowerCase() === PERMANENT_PLATFORM_OWNER_EMAIL
+    const isActive = isPermanentOwner || (
+      profile?.activation_status === 'active' && profile?.is_active !== false
+    )
     if (!profile || !isActive) {
       await supabase.auth.signOut()
       const pending = profile?.activation_status === 'pending'
