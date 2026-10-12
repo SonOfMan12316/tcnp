@@ -35,6 +35,8 @@ const TEAM_OPTIONS = [
   { value: "swift", label: "Team Swift" },
 ];
 
+const LOGIN_REQUEST_TIMEOUT_MS = 12_000
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function FieldLabel({ htmlFor, children }: { htmlFor: string; children: React.ReactNode }) {
@@ -182,11 +184,18 @@ export default function LoginPage() {
     setFormNotice("");
     setLoading(true);
     let loginSuccess = false;
+    let requestTimedOut = false;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      requestTimedOut = true;
+      controller.abort();
+    }, LOGIN_REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
           password,
@@ -210,13 +219,16 @@ export default function LoginPage() {
     } catch (err: any) {
       if (!loginSuccess) {
         const message =
-          err?.message === "Failed to fetch"
+          requestTimedOut
+            ? "Sign-in is taking longer than expected. Check your connection and try again."
+            : err?.message === "Failed to fetch"
             ? "Unable to reach the TCNP application server. Please refresh and try again."
             : err?.message || "Failed to login";
         setFormError(message);
         toast.error(message);
       }
     } finally {
+      window.clearTimeout(timeout);
       if (!loginSuccess) setLoading(false);
     }
   };

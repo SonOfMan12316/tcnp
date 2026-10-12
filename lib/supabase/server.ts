@@ -3,12 +3,17 @@ import { cookies } from 'next/headers'
 import type { Database } from '@/types/supabase'
 import { getSupabaseBrowserConfig } from '@/lib/supabase/config'
 import { logSupabaseError } from '@/lib/supabase/error-utils'
+import { createSupabaseRequestTimeoutFetch } from '@/lib/supabase/request-timeout'
 
-export async function createClient() {
+export async function createClient(options: { requestTimeoutMs?: number } = {}) {
   const cookieStore = await cookies()
 
   try {
     const { url, anonKey } = getSupabaseBrowserConfig()
+
+    const requestOptions = options.requestTimeoutMs
+      ? { global: { fetch: createSupabaseRequestTimeoutFetch(url, options.requestTimeoutMs) } }
+      : {}
 
     return createServerClient<Database>(
       url,
@@ -27,7 +32,8 @@ export async function createClient() {
               logSupabaseError('Supabase server client cookie set failed', error)
             }
           },
-        }
+        },
+        ...requestOptions,
       }
     )
   } catch (error) {

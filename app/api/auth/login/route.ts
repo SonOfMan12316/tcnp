@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
+import { isSupabaseRequestTimeout } from '@/lib/supabase/request-timeout'
 import { checkRateLimit } from '@/lib/security/rate-limit'
 import * as Sentry from '@sentry/nextjs'
 
@@ -10,6 +11,7 @@ const loginSchema = z.object({
 })
 
 const PERMANENT_PLATFORM_OWNER_EMAIL = 'doriazowan@gmail.com'
+const LOGIN_SUPABASE_DEADLINE_MS = 7_000
 
 export async function POST(request: Request) {
   if (!checkRateLimit(request, 'login', 10, 60_000).success) return NextResponse.json({ error: 'Too many attempts. Please wait a minute.' }, { status: 429 })
@@ -27,7 +29,9 @@ export async function POST(request: Request) {
 
   let stage = 'password_auth'
   try {
-    const supabase = await createClient()
+    // A single deadline covers password auth, profile verification, and any
+    // cleanup call so a stalled Supabase request cannot leave the UI spinning.
+    const supabase = await createClient({ requestTimeoutMs: LOGIN_SUPABASE_DEADLINE_MS })
     const { data, error } = await supabase.auth.signInWithPassword(parsed.data)
 
     if (error || !data.user) {
@@ -35,7 +39,12 @@ export async function POST(request: Request) {
         Sentry.captureException(error, {
           tags: { feature: 'auth', auth_stage: 'password_auth' },
         })
-        return NextResponse.json({ error: 'Authentication is temporarily unavailable. Please retry.' }, { status: 503 })
+        const timedOut = isSupabaseRequestTimeout(error)
+        if (timedOut) console.error('[auth/login] Supabase request timed out', { stage })
+        return NextResponse.json(
+          { error: timedOut ? 'The sign-in service took too long to respond. Please retry.' : 'Authentication is temporarily unavailable. Please retry.' },
+          { status: timedOut ? 504 : 503 }
+        )
       }
       return NextResponse.json({ error: 'Invalid email or password.' }, { status: 401 })
     }
@@ -55,9 +64,11 @@ export async function POST(request: Request) {
         tags: { feature: 'auth', auth_stage: 'profile_read' },
       })
       await supabase.auth.signOut()
+      const timedOut = isSupabaseRequestTimeout(profileError)
+      if (timedOut) console.error('[auth/login] Supabase request timed out', { stage })
       return NextResponse.json(
-        { error: 'We could not verify your account right now. Please try again shortly.' },
-        { status: 503 }
+        { error: timedOut ? 'Account verification took too long to respond. Please retry.' : 'We could not verify your account right now. Please try again shortly.' },
+        { status: timedOut ? 504 : 503 }
       )
     }
 
