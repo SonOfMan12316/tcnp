@@ -15,7 +15,9 @@ import {
   DATA_COLLECTION,
   DENY_URLS,
   IGNORED_ERRORS,
+  matchesIgnoredError,
   redactUrl,
+  retitleSerializedException,
   resolveDsn,
   resolveEnvironment,
   resolveRelease,
@@ -74,6 +76,16 @@ if (dsn) {
       if (event.request?.url) {
         event.request.url = redactUrl(event.request.url)
       }
+
+      // Supabase rejects with plain objects, so these arrive titled "Object
+      // captured as exception with keys: ..." and all group together. Promote
+      // the real message out of the serialized payload first, then re-apply
+      // the ignore list: `ignoreErrors` already ran against the useless title,
+      // so entries like 'AbortError' never had anything to match.
+      retitleSerializedException(event)
+      const message = event.exception?.values?.[0]?.value
+      if (message && matchesIgnoredError(message)) return null
+
       return event
     },
 
