@@ -180,3 +180,48 @@ export function resolveRelease(): string | undefined {
     || undefined
   )
 }
+
+/** True when `message` matches any entry in IGNORED_ERRORS. */
+export function matchesIgnoredError(message: string): boolean {
+  return IGNORED_ERRORS.some((pattern) =>
+    typeof pattern === 'string' ? message.includes(pattern) : pattern.test(message)
+  )
+}
+
+/** The title the SDK assigns when a non-Error value is captured. */
+const SERIALIZED_EXCEPTION_TITLE = 'Object captured as exception'
+
+/** The minimum shape of a Sentry event this module needs; avoids an SDK import. */
+type SerializableEvent = {
+  exception?: { values?: { value?: string }[] }
+  extra?: Record<string, unknown>
+}
+
+/**
+ * Give plain-object rejections a real title.
+ *
+ * Supabase and PostgREST reject with `{ code, details, hint, message }` rather
+ * than an Error, so the SDK titles the issue "Object captured as exception
+ * with keys: code, details, hint, message". Every such failure — a timeout, a
+ * permission denial, a bad query — collapses into one meaningless issue, and
+ * `ignoreErrors` cannot match them because it tests this title rather than the
+ * message buried inside.
+ *
+ * `extraErrorDataIntegration` has already serialized the object into
+ * `extra.__serialized__`, so lift its `message` into the exception value.
+ * Call this before applying the ignore list, and the two problems resolve
+ * together: issues group by what actually failed, and the existing patterns
+ * start matching.
+ */
+export function retitleSerializedException(event: SerializableEvent): void {
+  const exception = event.exception?.values?.[0]
+  if (!exception?.value?.startsWith(SERIALIZED_EXCEPTION_TITLE)) return
+
+  const serialized = event.extra?.__serialized__
+  if (typeof serialized !== 'object' || serialized === null) return
+
+  const message = (serialized as { message?: unknown }).message
+  if (typeof message !== 'string' || !message.trim()) return
+
+  exception.value = message
+}
